@@ -1,0 +1,365 @@
+import pygame
+import heapq
+import math
+import time
+
+pygame.init()
+
+# Constants
+WIDTH, HEIGHT = 400, 450
+GRID_SIZE = 40
+FPS = 60
+WHITE = (255, 255, 255)
+RED = (255, 100, 100)
+GREEN = (100, 255, 100)
+BLUE = (100, 100, 255)
+BLACK = (30, 30, 30)
+GRAY = (200, 200, 200)
+YELLOW = (255, 255, 150)
+DARK_GRAY = (50, 50, 50)
+DARK_LINE = (20, 20, 20)
+PURPLE = (147, 112, 219)
+
+# Grid dimensions
+GRID_WIDTH = WIDTH // GRID_SIZE
+GRID_HEIGHT = (HEIGHT - 150) // GRID_SIZE
+
+# Game state
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Drone Delivery Pathfinding")
+clock = pygame.time.Clock()
+
+class Node:
+    def __init__(self, x, y):#correction
+
+        self.x = x
+        self.y = y
+        self.g = float('inf')
+        self.h = 0
+        self.f = float('inf')
+        self.parent = None
+        self.is_obstacle = False
+        
+    def __lt__(self, other): #correction
+        return self.f < other.f
+
+# Grid initialization
+grid = [[Node(x, y) for y in range(GRID_HEIGHT)] for x in range(GRID_WIDTH)]
+start, end = None, None
+obstacles = set()
+path = []
+drone_pos = None
+selected_tool = None
+running = False
+drone_moving = False
+status_message = ""
+completed_path = []
+pulse_timer = 0
+completion_animation = False
+animation_timer = 0
+
+# Button definitions
+buttons = [
+    {"text": "Start", "rect": pygame.Rect(20, HEIGHT-120, 80, 40), "color": GREEN, "hover": (150, 255, 150)},
+    {"text": "End", "rect": pygame.Rect(110, HEIGHT-120, 80, 40), "color": RED, "hover": (255, 150, 150)},
+    {"text": "Obstacle", "rect": pygame.Rect(200, HEIGHT-120, 80, 40), "color": BLACK, "hover": (80, 80, 80)},
+    {"text": "Run", "rect": pygame.Rect(290, HEIGHT-120, 80, 40), "color": BLUE, "hover": (150, 150, 255)},
+    {"text": "Reset", "rect": pygame.Rect(20, HEIGHT-60, 80, 40), "color": GRAY, "hover": (230, 230, 230)}
+]
+
+def heuristic(a, b):
+    return abs(a.x - b.x) + abs(a.y - b.y)
+
+def get_neighbors(node):
+    neighbors = []
+    for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+        new_x, new_y = node.x + dx, node.y + dy
+        if 0 <= new_x < GRID_WIDTH and 0 <= new_y < GRID_HEIGHT and not grid[new_x][new_y].is_obstacle:
+            neighbors.append(grid[new_x][new_y])
+    return neighbors
+
+def a_star(start, end):
+    global status_message
+    if all(grid[end.x + dx][end.y + dy].is_obstacle
+            for dx, dy in [(0,1), (1,0), (0,-1), (-1,0)]
+            if 0 <= end.x + dx < GRID_WIDTH and 0 <= end.y + dy < GRID_HEIGHT):
+        status_message = "End point surrounded!"
+        return None
+        
+    for row in grid:
+        for node in row:
+            node.g = float('inf')
+            node.f = float('inf')
+            node.parent = None
+            
+    start.g = 0
+    start.h = heuristic(start, end)
+    start.f = start.h
+    
+    open_list = [(start.f, start)]
+    closed_set = set()
+    
+    while open_list:
+        current = heapq.heappop(open_list)[1]
+        if current == end:
+            path = []
+            while current:
+                path.append((current.x, current.y))
+                current = current.parent
+            status_message = "Path Found!"
+            return path[::-1]
+            
+        closed_set.add((current.x, current.y))
+        for neighbor in get_neighbors(current):
+            if (neighbor.x, neighbor.y) in closed_set:
+                continue
+            tentative_g = current.g + 1
+            if tentative_g < neighbor.g:
+                neighbor.parent = current
+                neighbor.g = tentative_g
+                neighbor.h = heuristic(neighbor, end)
+                neighbor.f = neighbor.g + neighbor.h
+                heapq.heappush(open_list, (neighbor.f, neighbor))
+    status_message = "No Path Available"
+    return None
+
+def setup():
+    global start, end, obstacles, path, drone_pos, selected_tool, running, drone_moving, status_message, completed_path, completion_animation
+    start, end, drone_pos = None, None, None
+    obstacles.clear()
+    path = []
+    completed_path = []
+    selected_tool = None
+    running = False
+    drone_moving = False
+    completion_animation = False
+    status_message = "Ready"
+    for row in grid:
+        for node in row:
+            node.is_obstacle = False
+
+def draw_dotted_line(start_pos, end_pos, progress):
+    x1 = start_pos[0] * GRID_SIZE + GRID_SIZE//2
+    y1 = 50 + start_pos[1] * GRID_SIZE + GRID_SIZE//2
+    x2 = end_pos[0] * GRID_SIZE + GRID_SIZE//2
+    y2 = 50 + end_pos[1] * GRID_SIZE + GRID_SIZE//2
+    
+    distance = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+    num_dots = int(distance / 10)
+    
+    if num_dots <= 1:
+        return
+    
+    dx = (x2 - x1) / num_dots
+    dy = (y2 - y1) / num_dots
+    
+    for i in range(num_dots + 1):
+        
+        r = int(147 + (255-147) * progress)
+        g = int(112 + (255-112) * progress)
+        b = int(219 + (150-219) * progress)
+        dot_x = x1 + dx * i
+        dot_y = y1 + dy * i
+        pygame.draw.circle(screen, (r, g, b), (int(dot_x), int(dot_y)), 3)
+
+def draw():
+    global pulse_timer, animation_timer
+    screen.fill(DARK_GRAY)
+    
+    # Title bar with gradient
+    pygame.draw.rect(screen, (70, 70, 70), (0, 0, WIDTH, 50))
+    font = pygame.font.Font(None, 36)
+    title = font.render("Drone Delivery", True, WHITE)
+    screen.blit(title, (WIDTH//2 - title.get_width()//2, 15))
+    
+    # Grid area
+    pygame.draw.rect(screen, WHITE, (0, 50, WIDTH, HEIGHT-150))
+    for x in range(0, WIDTH, GRID_SIZE):
+        pygame.draw.line(screen, GRAY, (x, 50), (x, HEIGHT-100), 2)
+    for y in range(50, HEIGHT-100, GRID_SIZE):
+        pygame.draw.line(screen, GRAY, (0, y), (WIDTH, y), 2)
+    
+    # Obstacles with shadow
+    for obs_x, obs_y in obstacles:
+        pygame.draw.rect(screen, (40, 40, 40), (obs_x * GRID_SIZE + 2, 50 + obs_y * GRID_SIZE + 2, GRID_SIZE, GRID_SIZE))
+        pygame.draw.rect(screen, BLACK, (obs_x * GRID_SIZE, 50 + obs_y * GRID_SIZE, GRID_SIZE, GRID_SIZE))
+    
+    # Draw path
+    if path:
+        total_length = len(path) - 1
+        for i in range(len(path) - 1):
+            progress = i / total_length if total_length > 0 else 0
+            draw_dotted_line(path[i], path[i + 1], progress)
+        for x, y in path:
+            pygame.draw.rect(screen, YELLOW, (x * GRID_SIZE, 50 + y * GRID_SIZE, GRID_SIZE, GRID_SIZE), 2)
+    
+    # Completed path with glow
+    if completed_path:
+        for i in range(len(completed_path) - 1):
+            x1, y1 = completed_path[i]
+            x2, y2 = completed_path[i + 1]
+            if x1 == x2:
+                pygame.draw.line(screen, (50, 50, 50), 
+                                (x1 * GRID_SIZE + GRID_SIZE//2, 50 + y1 * GRID_SIZE + GRID_SIZE//2),
+                                (x2 * GRID_SIZE + GRID_SIZE//2, 50 + y2 * GRID_SIZE + GRID_SIZE//2), 8)
+                pygame.draw.line(screen, DARK_LINE,
+                                (x1 * GRID_SIZE + GRID_SIZE//2, 50 + y1 * GRID_SIZE + GRID_SIZE//2),
+                                (x2 * GRID_SIZE + GRID_SIZE//2, 50 + y2 * GRID_SIZE + GRID_SIZE//2), 6)
+            elif y1 == y2:
+                pygame.draw.line(screen, (50, 50, 50),
+                                (x1 * GRID_SIZE + GRID_SIZE//2, 50 + y1 * GRID_SIZE + GRID_SIZE//2),
+                                (x2 * GRID_SIZE + GRID_SIZE//2, 50 + y2 * GRID_SIZE + GRID_SIZE//2), 8)
+                pygame.draw.line(screen, DARK_LINE,
+                                (x1 * GRID_SIZE + GRID_SIZE//2, 50 + y1 * GRID_SIZE + GRID_SIZE//2),
+                                (x2 * GRID_SIZE + GRID_SIZE//2, 50 + y2 * GRID_SIZE + GRID_SIZE//2), 6)
+    
+    # Start and End with glow
+    if start:
+        pygame.draw.rect(screen, (150, 255, 150), (start.x * GRID_SIZE, 50 + start.y * GRID_SIZE, GRID_SIZE, GRID_SIZE), 2)
+        pygame.draw.rect(screen, GREEN, (start.x * GRID_SIZE, 50 + start.y * GRID_SIZE, GRID_SIZE, GRID_SIZE))
+    if end:
+        pygame.draw.rect(screen, (255, 150, 150), (end.x * GRID_SIZE, 50 + end.y * GRID_SIZE, GRID_SIZE, GRID_SIZE), 2)
+        pygame.draw.rect(screen, RED, (end.x * GRID_SIZE, 50 + end.y * GRID_SIZE, GRID_SIZE, GRID_SIZE))
+    
+    # Drone with pulsing effect
+    if drone_pos:
+        pulse_timer += 0.05
+        pulse_size = GRID_SIZE//3 + int(math.sin(pulse_timer) * 5)
+        pygame.draw.circle(screen, (150, 150, 255), 
+                          (int(drone_pos[0] * GRID_SIZE + GRID_SIZE//2),
+                           int(50 + drone_pos[1] * GRID_SIZE + GRID_SIZE//2)),
+                          pulse_size + 2)
+        pygame.draw.circle(screen, BLUE,
+                          (int(drone_pos[0] * GRID_SIZE + GRID_SIZE//2),
+                           int(50 + drone_pos[1] * GRID_SIZE + GRID_SIZE//2)),
+                          pulse_size)
+        pygame.draw.circle(screen, WHITE,
+                          (int(drone_pos[0] * GRID_SIZE + GRID_SIZE//2),
+                           int(50 + drone_pos[1] * GRID_SIZE + GRID_SIZE//2)),
+                          GRID_SIZE//6)
+    
+    # Completion animation
+    if completion_animation and animation_timer < 1.5:
+        animation_timer += 0.05
+        radius = int(GRID_SIZE * animation_timer)
+        pygame.draw.circle(screen, (255, 255, 255, 100), 
+                          (end.x * GRID_SIZE + GRID_SIZE//2, 50 + end.y * GRID_SIZE + GRID_SIZE//2),
+                          radius, 2)
+    
+    # Buttons with hover effect
+    mouse_pos = pygame.mouse.get_pos()
+    font = pygame.font.Font(None, 28)
+    for button in buttons:
+        color = button["hover"] if button["rect"].collidepoint(mouse_pos) else button["color"]
+        pygame.draw.rect(screen, color, button["rect"], 0, 5)
+        pygame.draw.rect(screen, WHITE, button["rect"], 2, 5)
+        text = font.render(button["text"], True, WHITE)
+        screen.blit(text, text.get_rect(center=button["rect"].center))
+    
+    # Status message with shadow
+    status_font = pygame.font.Font(None, 24)
+    status_text = status_font.render(status_message, True, BLACK)
+    screen.blit(status_text, (112, HEIGHT-58))
+    status_text = status_font.render(status_message, True, WHITE)
+    screen.blit(status_text, (110, HEIGHT-60))
+    
+    pygame.display.flip()
+
+def handle_click(pos):
+    global start, end, path, drone_pos, selected_tool, drone_moving, status_message, completed_path
+    x, y = pos
+    
+    for button in buttons:
+        if button["rect"].collidepoint(x, y):
+            if button["text"] == "Reset":
+                setup()
+                return
+            elif button["text"] == "Run" and start and end:
+                path = a_star(start, end)
+                if path:
+                    drone_pos = [float(start.x), float(start.y)]
+                    drone_moving = True
+                    completed_path = []
+                    status_message = "Drone Moving"
+                return
+            selected_tool = button["text"].lower()
+            return
+    
+    grid_x, grid_y = x // GRID_SIZE, (y - 50) // GRID_SIZE
+    if grid_y < 0 or grid_y >= GRID_HEIGHT:
+        return
+    
+    if selected_tool == "start":
+        if not grid[grid_x][grid_y].is_obstacle:
+            start = grid[grid_x][grid_y]
+            path, drone_pos, drone_moving = [], None, False
+            completed_path = []
+            status_message = "Start set"
+    elif selected_tool == "end":
+        if not grid[grid_x][grid_y].is_obstacle:
+            end = grid[grid_x][grid_y]
+            path, drone_pos, drone_moving = [], None, False
+            completed_path = []
+            status_message = "End set"
+    elif selected_tool == "obstacle":
+        if (grid_x, grid_y) != (start.x, start.y) if start else True and \
+           (grid_x, grid_y) != (end.x, end.y) if end else True:
+            grid[grid_x][grid_y].is_obstacle = True
+            obstacles.add((grid_x, grid_y))
+            path, drone_pos, drone_moving = [], None, False
+            completed_path = []
+            status_message = "Obstacle added"
+
+def animate_drone():
+    global drone_pos, drone_moving, completed_path, status_message, completion_animation, animation_timer
+    if drone_moving and path and drone_pos:
+        if not completed_path:
+            completed_path.append((int(drone_pos[0]), int(drone_pos[1])))
+        
+        next_pos = path[0]
+        speed = 0.15
+        
+        dx = next_pos[0] - drone_pos[0]
+        dy = next_pos[1] - drone_pos[1]
+        distance = math.sqrt(dx*dx + dy*dy)
+        
+        if distance > 0.05:
+            if dx > 0:
+                drone_pos[0] = min(drone_pos[0] + speed, next_pos[0])
+            elif dx < 0:
+                drone_pos[0] = max(drone_pos[0] - speed, next_pos[0])
+            if dy > 0:
+                drone_pos[1] = min(drone_pos[1] + speed, next_pos[1])
+            elif dy < 0:
+                drone_pos[1] = max(drone_pos[1] - speed, next_pos[1])
+        else:
+            drone_pos = [float(next_pos[0]), float(next_pos[1])]
+            completed_path.append(next_pos)
+            path.pop(0)
+            
+            if not path:
+                drone_moving = False
+                status_message = "Delivery Complete!"
+                drone_pos = [float(end.x), float(end.y)]
+                completion_animation = True
+                animation_timer = 0
+
+def main():
+    setup()
+    running = True
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                handle_click(event.pos)
+                
+        if drone_moving:
+            animate_drone()
+            
+        draw()
+        clock.tick(FPS)
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
